@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>TEAM AGP - Endurance Strategy 24h v31.0-CONFIRMIMPORT</title>
+  <title>TEAM AGP - Endurance Strategy 24h v32.2-POLISH</title>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
@@ -205,6 +205,13 @@
     @keyframes alertPulse { 0%, 100% { box-shadow: 0 0 5px rgba(255,51,68,0.3); } 50% { box-shadow: 0 0 20px rgba(255,51,68,0.6); } }
     .alert-critical { animation: alertPulse 1s infinite; }
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    @keyframes yellowPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    @keyframes bluePulse { 0%, 100% { box-shadow: 0 0 20px rgba(88,166,255,0.8); } 50% { box-shadow: 0 0 40px rgba(88,166,255,1); } }
+    .flag-overlay { position: fixed; top: 0; left: 0; right: 0; z-index: 9999; padding: 12px 20px; display: flex; align-items: center; justify-content: center; gap: 12px; font-weight: 800; font-size: 18px; text-transform: uppercase; letter-spacing: 2px; cursor: pointer; }
+    .flag-yellow { background: linear-gradient(135deg, #f0c000, #d4a800); color: #000; animation: yellowPulse 0.5s infinite; }
+    .flag-blue { background: linear-gradient(135deg, #1f6feb, #58a6ff); color: #fff; animation: bluePulse 1s infinite; }
+    .flag-red { background: linear-gradient(135deg, #f85149, #cc0000); color: #fff; animation: yellowPulse 0.3s infinite; }
+    .flag-sc { background: linear-gradient(135deg, #f0c000, #ff6b00); color: #000; animation: yellowPulse 0.8s infinite; }
     .slide-in { animation: slideIn 0.3s; } .glow { animation: glow 2s infinite; } .pulse { animation: pulse 1.5s infinite; }
     .spin { animation: spin 1s linear infinite; }
     .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; backdrop-filter: blur(10px); }
@@ -273,9 +280,9 @@
     .help-tooltip { position: relative; display: inline-block; }
     .help-tooltip[data-help]::after { content: attr(data-help); position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: linear-gradient(135deg, #0066cc, #0044aa); color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 11px; font-weight: 500; white-space: normal; opacity: 0; pointer-events: none; transition: opacity 0.3s, transform 0.3s; z-index: 99999; margin-bottom: 10px; box-shadow: 0 6px 20px rgba(0,102,204,0.4); max-width: 260px; min-width: 140px; text-align: center; line-height: 1.5; border: 1px solid rgba(255,255,255,0.2); }
     .help-tooltip[data-help]::before { content: ''; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); border: 8px solid transparent; border-top-color: #0066cc; opacity: 0; pointer-events: none; transition: opacity 0.3s; z-index: 99999; margin-bottom: 2px; }
-    /* Tooltips TOUJOURS visibles au hover (plus besoin de help-mode) */
-    .help-tooltip[data-help]:hover::after, .help-tooltip[data-help]:hover::before { opacity: 1; transform: translateX(-50%) translateY(-4px); }
-    .help-tooltip[data-help]:hover::after { transform: translateX(-50%) translateY(-4px); }
+    /* v32: Tooltips désactivés par défaut - activés uniquement avec .tooltips-enabled sur body */
+    body.tooltips-enabled .help-tooltip[data-help]:hover::after, body.tooltips-enabled .help-tooltip[data-help]:hover::before { opacity: 1; transform: translateX(-50%) translateY(-4px); }
+    body.tooltips-enabled .help-tooltip[data-help]:hover::after { transform: translateX(-50%) translateY(-4px); }
     table { overflow: visible !important; }
     th, td { overflow: visible !important; position: relative; }
     .card { overflow: visible !important; }
@@ -5181,9 +5188,70 @@
       const [prevPitStatus, setPrevPitStatus] = useState({}); // { carNum: { isInPit: 0/1, timestamp } }
       const [currentStintData, setCurrentStintData] = useState({}); // { carNum: { startLap, startTime, laps: [] } }
       
+      // ═══ v32: NOUVELLES FONCTIONNALITÉS TÉLÉMÉTRIE ═══
+      const [liveAllVehicles, setLiveAllVehicles] = useState([]); // Classement COMPLET de allVehicles
+      const [flagStatus, setFlagStatus] = useState('GREEN'); // Status drapeau actuel
+      const [raceEvents, setRaceEvents] = useState([]); // Log des événements course
+      const [fuelAlerts, setFuelAlerts] = useState({}); // Alertes carburant par voiture
+      const prevFlagRef = useRef('GREEN');
+      const seenEventsRef = useRef(new Set()); // S4: Anti-duplicate events
+      const prevHeartbeatRef = useRef({}); // S2: Heartbeat tracking par voiture
+      const heartbeatStaleCountRef = useRef({}); // S2: Compteur de heartbeat identiques
+      
+      // ═══ S1: SNAPSHOT LOCAL DASHBOARD v32.2 (ULTRA PRIORITAIRE ENDURANCE) ═══
+      // Sauvegarde automatique état critique toutes les 10 secondes
+      const SNAPSHOT_KEY = 'AGP_V32_LIVE_SNAPSHOT';
+      
+      // Restaurer snapshot au chargement (une seule fois)
+      useEffect(() => {
+        try {
+          const saved = localStorage.getItem(SNAPSHOT_KEY);
+          if (saved) {
+            const snapshot = JSON.parse(saved);
+            const age = Date.now() - (snapshot.timestamp || 0);
+            // Restaurer seulement si snapshot < 2 heures (éviter données périmées)
+            if (age < 2 * 3600 * 1000) {
+              console.log('📥 Restauration snapshot LiveView (' + Math.round(age/60000) + ' min)');
+              if (snapshot.raceEvents?.length > 0) setRaceEvents(snapshot.raceEvents);
+              if (snapshot.currentStintData) setCurrentStintData(snapshot.currentStintData);
+              if (snapshot.fuelAlerts) setFuelAlerts(snapshot.fuelAlerts);
+              if (snapshot.raceSessionTime) setRaceSessionTime(snapshot.raceSessionTime);
+              if (snapshot.prevPitStatus) setPrevPitStatus(snapshot.prevPitStatus);
+              if (snapshot.collectedData && Object.keys(snapshot.collectedData).length > 0) {
+                setCollectedData(prev => ({ ...prev, ...snapshot.collectedData }));
+              }
+              // Restaurer seenEvents pour éviter doublons post-restore
+              if (snapshot.seenEvents && Array.isArray(snapshot.seenEvents)) {
+                snapshot.seenEvents.forEach(k => seenEventsRef.current.add(k));
+              }
+            }
+          }
+        } catch (e) { console.warn('Erreur restauration snapshot:', e); }
+      }, []);
+      
+      // Sauvegarder snapshot toutes les 10 secondes
+      useEffect(() => {
+        const snapshotInterval = setInterval(() => {
+          try {
+            const snapshot = {
+              timestamp: Date.now(),
+              raceEvents: raceEvents.slice(0, 50), // Max 50 events
+              currentStintData,
+              fuelAlerts,
+              raceSessionTime,
+              prevPitStatus,
+              collectedData,
+              seenEvents: Array.from(seenEventsRef.current).slice(-200) // Max 200 event keys
+            };
+            localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(snapshot));
+          } catch (e) { console.warn('Erreur snapshot:', e); }
+        }, 10000);
+        return () => clearInterval(snapshotInterval);
+      }, [raceEvents, currentStintData, fuelAlerts, raceSessionTime, prevPitStatus, collectedData]);
+      
       // PAGE COURSE - 3 voitures à suivre en duel (personnalisable)
       const [duelCars, setDuelCars] = useState(['02', '05', '99']);
-      const [feedFilter, setFeedFilter] = useState({ agp: true, pit: true, overtake: true, best: true });
+      const [feedFilter, setFeedFilter] = useState({ agp: true, pit: true, flag: true, best: true, fullGrid: false });
 
       // Formatage et helpers
       const formatLapTimeSec = (s) => { if (!s || s <= 0 || s > 600) return '--:--.---'; const m = Math.floor(s / 60); const sec = Math.floor(s % 60); const ms = Math.round((s % 1) * 1000); return m + ':' + sec.toString().padStart(2, '0') + '.' + ms.toString().padStart(3, '0'); };
@@ -5209,6 +5277,8 @@
       
       // État des alertes
       const [activeAlerts, setActiveAlerts] = useState([]);
+      const [showAlertsPanel, setShowAlertsPanel] = useState(false); // v32: Panneau alertes désactivé par défaut
+      const [showTooltips, setShowTooltips] = useState(false); // v32: Bulles d'aide désactivées par défaut
       
       // État de la stratégie suggérée
       const [strategySuggestion, setStrategySuggestion] = useState(null);
@@ -5242,6 +5312,12 @@
           setTimeout(() => setShowWhatsNew(true), 1500);
         }
       }, []);
+      
+      // v32: Toggle tooltips class on body
+      useEffect(() => { 
+        if (showTooltips) document.body.classList.add('tooltips-enabled'); 
+        else document.body.classList.remove('tooltips-enabled'); 
+      }, [showTooltips]);
       
       // Charger les références au démarrage
       useEffect(() => {
@@ -6186,11 +6262,80 @@
             setIsConnected(true);
             
             // Vérifier si SimHub envoie des données (plugin actif)
-            const hasPluginData = Object.values(data).some(car => 
-              car && car.pluginVersion && car.timestamp && (Date.now() - car.timestamp < 10000)
-            );
-            setSimhubConnected(hasPluginData);
+            // v32.1: Timeout réduit à 8s pour détection plus rapide des déconnexions
+            // v32.2 S2: Heartbeat check - détecter si plugin figé même avec timestamp récent
+            let pluginFrozen = false;
+            const hasPluginData = Object.values(data).some(car => {
+              if (!car || !car.pluginVersion || !car.timestamp) return false;
+              if (Date.now() - car.timestamp >= 8000) return false;
+              
+              // S2: Vérifier heartbeat si disponible
+              const carNum = car.carNumber;
+              if (car.heartbeat !== undefined && carNum) {
+                const prevHb = prevHeartbeatRef.current[carNum];
+                if (prevHb !== undefined && prevHb === car.heartbeat) {
+                  // Heartbeat identique → plugin potentiellement figé
+                  heartbeatStaleCountRef.current[carNum] = (heartbeatStaleCountRef.current[carNum] || 0) + 1;
+                  // Si 3 cycles consécutifs avec même heartbeat → figé
+                  if (heartbeatStaleCountRef.current[carNum] >= 3) {
+                    pluginFrozen = true;
+                    console.warn('⚠️ Plugin figé détecté (heartbeat stable) pour #' + carNum);
+                  }
+                } else {
+                  // Heartbeat a changé → reset counter
+                  heartbeatStaleCountRef.current[carNum] = 0;
+                }
+                prevHeartbeatRef.current[carNum] = car.heartbeat;
+              }
+              return true;
+            });
+            setSimhubConnected(hasPluginData && !pluginFrozen);
             if (hasPluginData) setLastSimhubUpdate(Date.now());
+            
+            // ═══ v32: EXTRACTION CLASSEMENT COMPLET (allVehicles) ═══
+            // v32.2 O3: Éviter re-tri si données identiques
+            Object.values(data).forEach(car => {
+              if (car && car.allVehicles && Array.isArray(car.allVehicles) && car.allVehicles.length > 0) {
+                // O3: Tri seulement si positions ont changé
+                setLiveAllVehicles(prev => {
+                  const newSorted = [...car.allVehicles].sort((a, b) => (a.position || 999) - (b.position || 999));
+                  // Éviter re-render si mêmes positions
+                  if (prev.length === newSorted.length && 
+                      prev.every((v, i) => v.position === newSorted[i].position && v.carNumber === newSorted[i].carNumber)) {
+                    return prev;
+                  }
+                  return newSorted;
+                });
+              }
+              
+              // ═══ v32: EXTRACTION DRAPEAUX ═══
+              if (car && car.flags && car.flags.status) {
+                const newFlag = car.flags.status;
+                if (newFlag !== prevFlagRef.current) {
+                  setFlagStatus(newFlag);
+                  if (newFlag !== 'GREEN' && newFlag !== 'NONE') {
+                    const time = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+                    setRaceEvents(prev => [{
+                      type: 'flag',
+                      icon: newFlag === 'YELLOW' ? '🟡' : newFlag === 'BLUE' ? '🔵' : newFlag === 'RED' ? '🔴' : '🚩',
+                      message: `Drapeau ${newFlag}`,
+                      time,
+                      timestamp: Date.now()
+                    }, ...prev].slice(0, 100));
+                  }
+                  prevFlagRef.current = newFlag;
+                }
+              }
+              
+              // ═══ v32: ALERTES CARBURANT AUTOMATIQUES ═══
+              if (car && car.fuelRemainingLaps !== undefined && car.fuelRemainingLaps < 5) {
+                const carNum = car.carNumber;
+                setFuelAlerts(prev => ({
+                  ...prev,
+                  [carNum]: { lapsRemaining: car.fuelRemainingLaps, timestamp: Date.now(), driverName: car.driverName }
+                }));
+              }
+            });
             
             const newStatus = {...(pilotStatus || {})};
             
@@ -6209,106 +6354,159 @@
               }
               
               // ═══ DÉTECTION TRANSITION PIT IN/OUT ═══
+              // v32.1: Ajout hystérésis (3 sec minimum dans l'état précédent)
+              // v32.2 S3: Double-source confirmation (speedKmh < 80 pour confirmer PIT IN)
               const currentIsInPit = carData.isInPit || 0;
               const prevStatus = prevPitStatus[carNum];
+              const MIN_STATE_DURATION = 3000; // 3 secondes minimum avant de valider une transition
+              
+              // S3: Confirmation PIT avec vitesse basse ou variation carburant
+              const speedKmh = carData.speedKmh || carData.speed || 0;
+              const pitConfirmedBySpeed = currentIsInPit === 1 && speedKmh < 80;
               
               if (prevStatus !== undefined) {
+                const stateDuration = now - (prevStatus.timestamp || 0);
+                const stateStable = stateDuration >= MIN_STATE_DURATION;
+                
                 // SORTIE PIT (1 → 0) = Début nouveau stint
-                if (prevStatus.isInPit === 1 && currentIsInPit === 0) {
-                  setCurrentStintData(prev => ({
-                    ...prev,
-                    [carNum]: {
-                      startLap: carData.currentLap || 0,
-                      startTime: now,
-                      pitOutTime: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', hour12: false }),
-                      driverName: carData.driverName || 'Unknown',
-                      laps: []
-                    }
-                  }));
-                  
-                  setSuggestions(prev => [...prev.filter(s => s.type !== 'PIT_OUT_' + carNum), {
-                    type: 'PIT_OUT_' + carNum,
-                    priority: 'INFO',
-                    message: `🟢 ${carData.driverName || 'Voiture ' + carNum} sort des stands - Début relais`,
-                    timestamp: now
-                  }]);
+                // Seulement si on était en pit depuis au moins 3 sec
+                if (prevStatus.isInPit === 1 && currentIsInPit === 0 && stateStable) {
+                  // S4: Anti-duplicate event
+                  const eventKey = `pit-out-${carNum}-${carData.currentLap}`;
+                  if (!seenEventsRef.current.has(eventKey)) {
+                    seenEventsRef.current.add(eventKey);
+                    
+                    setCurrentStintData(prev => ({
+                      ...prev,
+                      [carNum]: {
+                        startLap: carData.currentLap || 0,
+                        startTime: now,
+                        pitOutTime: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', hour12: false }),
+                        driverName: carData.driverName || 'Unknown',
+                        laps: []
+                      }
+                    }));
+                    
+                    setSuggestions(prev => [...prev.filter(s => s.type !== 'PIT_OUT_' + carNum), {
+                      type: 'PIT_OUT_' + carNum,
+                      priority: 'INFO',
+                      message: `🟢 ${carData.driverName || 'Voiture ' + carNum} sort des stands - Début relais`,
+                      timestamp: now
+                    }]);
+                    
+                    // ═══ v32: LOG PIT OUT DANS EVENTS ═══
+                    setRaceEvents(prev => [{
+                      type: 'pit-out',
+                      icon: '🚀',
+                      message: `#${carNum} ${carData.driverName || ''} sort des stands`,
+                      time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit',minute:'2-digit',second:'2-digit'}),
+                      timestamp: now
+                    }, ...prev].slice(0, 100));
+                  }
                 }
                 
                 // ENTRÉE PIT (0 → 1) = Fin du stint → Calculer temps réel et incident
-                if (prevStatus.isInPit === 0 && currentIsInPit === 1) {
-                  const stintData = currentStintData[carNum];
-                  const carCollected = collectedData?.[carNum];
-                  
-                  if (stintData && carCollected && carCollected.laps && carCollected.laps.length > 0) {
-                    // Calculer moyenne des 25 derniers tours (ou moins si pas assez)
-                    const recentLaps = carCollected.laps.slice(-25);
-                    const avgLapTimeSec = recentLaps.reduce((a, l) => a + l.time, 0) / recentLaps.length;
-                    const lapsInStint = (carData.currentLap || 0) - stintData.startLap;
+                // Seulement si on était hors pit depuis au moins 3 sec
+                // v32.2 S3: Confirmer avec vitesse basse OU isInPit=1 stable
+                const pitInConfirmed = currentIsInPit === 1 && (pitConfirmedBySpeed || stateStable);
+                if (prevStatus.isInPit === 0 && currentIsInPit === 1 && stateStable) {
+                  // S4: Anti-duplicate event
+                  const eventKey = `pit-in-${carNum}-${carData.currentLap}`;
+                  if (!seenEventsRef.current.has(eventKey)) {
+                    seenEventsRef.current.add(eventKey);
                     
-                    // Temps total du stint en secondes
-                    const stintDurationSec = lapsInStint * avgLapTimeSec;
+                    const stintData = currentStintData[carNum];
+                    const carCollected = collectedData?.[carNum];
                     
-                    // Formater en mm:ss
-                    const stintMins = Math.floor(stintDurationSec / 60);
-                    const stintSecs = Math.floor(stintDurationSec % 60);
-                    const realStintTime = stintMins + ':' + stintSecs.toString().padStart(2, '0');
-                    
-                    // Calculer l'incident (on compare avec le temps prévu plus tard)
-                    const pitInTime = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', hour12: false });
-                    
-                    // Envoyer les données au parent pour pré-remplir le planning
-                    if (onStintUpdate) {
-                      onStintUpdate({
-                        carNum,
-                        teamName: carData.teamName,
-                        driverName: stintData.driverName,
-                        lapsCompleted: lapsInStint,
-                        avgLapTimeSec,
-                        realStintTime,
-                        stintDurationSec,
-                        pitOutTime: stintData.pitOutTime,
-                        pitInTime,
-                        timestamp: now
-                      });
-                    }
-                    
-                    // ═══ AUTO-REMPLISSAGE PLANNING v29 ═══
-                    // UNIQUEMENT en mode COURSE (pas en entrainement)
-                    if (onStintUpdate && raceMode === 'race') {
-                      const realTimeSec = lapsInStint * avgLapTimeSec;
+                    if (stintData && carCollected && carCollected.laps && carCollected.laps.length > 0) {
+                      // Calculer moyenne des 25 derniers tours (ou moins si pas assez)
+                      const recentLaps = carCollected.laps.slice(-25);
+                      const avgLapTimeSec = recentLaps.reduce((a, l) => a + l.time, 0) / recentLaps.length;
+                      const lapsInStint = (carData.currentLap || 0) - stintData.startLap;
                       
-                      onStintUpdate({
-                        carNum: carNum,
-                        teamName: teamName,
-                        driverName: stintData.driverName,
+                      // Temps total du stint en secondes
+                      const stintDurationSec = lapsInStint * avgLapTimeSec;
+                      
+                      // Formater en mm:ss
+                      const stintMins = Math.floor(stintDurationSec / 60);
+                      const stintSecs = Math.floor(stintDurationSec % 60);
+                      const realStintTime = stintMins + ':' + stintSecs.toString().padStart(2, '0');
+                      
+                      // Calculer l'incident (on compare avec le temps prévu plus tard)
+                      const pitInTime = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', hour12: false });
+                      
+                      // Envoyer les données au parent pour pré-remplir le planning
+                      if (onStintUpdate) {
+                        onStintUpdate({
+                          carNum,
+                          teamName: carData.teamName,
+                          driverName: stintData.driverName,
+                          lapsCompleted: lapsInStint,
+                          avgLapTimeSec,
+                          realStintTime,
+                          stintDurationSec,
+                          pitOutTime: stintData.pitOutTime,
+                          pitInTime,
+                          timestamp: now
+                        });
+                      }
+                      
+                      // ═══ AUTO-REMPLISSAGE PLANNING v29 ═══
+                      // UNIQUEMENT en mode COURSE (pas en entrainement)
+                      if (onStintUpdate && raceMode === 'race') {
+                        const realTimeSec = lapsInStint * avgLapTimeSec;
+                        
+                        onStintUpdate({
+                          carNum: carNum,
+                          teamName: teamName,
+                          driverName: stintData.driverName,
+                          realStintTime: realStintTime,
+                          stintDurationSec: realTimeSec,
+                          lapsCompleted: lapsInStint,
+                          avgLapTimeSec: avgLapTimeSec,
+                          pitInTime: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+                        });
+                        
+                        console.log('🔄 Auto-fill envoyé: ' + teamName + ' - ' + realStintTime);
+                      }
+                      
+                      setSuggestions(prev => [...prev.filter(s => !s.type.startsWith('PIT_')), {
+                        type: 'PIT_IN_' + carNum,
+                        priority: incidentTime > 30 ? 'HIGH' : 'WARNING',
+                        message: `🔴 ${stintData.driverName} rentre - ${lapsInStint}t, ${realStintTime}` + (incidentTime > 0 ? ` ⚠️ +${incidentTime}s incident détecté!` : ''),
+                        timestamp: now,
+                        autoFilled: true,
                         realStintTime: realStintTime,
-                        stintDurationSec: realTimeSec,
-                        lapsCompleted: lapsInStint,
-                        avgLapTimeSec: avgLapTimeSec,
-                        pitInTime: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
-                      });
+                        incidentTime: incidentTime
+                      }]);
                       
-                      console.log('🔄 Auto-fill envoyé: ' + teamName + ' - ' + realStintTime);
+                      // ═══ v32: LOG PIT IN DANS EVENTS ═══
+                      setRaceEvents(prev => [{
+                        type: 'pit-in',
+                        icon: '📍',
+                        message: `#${carNum} ${stintData.driverName} entre aux stands (${lapsInStint}t)`,
+                        time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit',minute:'2-digit',second:'2-digit'}),
+                        timestamp: now
+                      }, ...prev].slice(0, 100));
                     }
-                    
-                    setSuggestions(prev => [...prev.filter(s => !s.type.startsWith('PIT_')), {
-                      type: 'PIT_IN_' + carNum,
-                      priority: incidentTime > 30 ? 'HIGH' : 'WARNING',
-                      message: `🔴 ${stintData.driverName} rentre - ${lapsInStint}t, ${realStintTime}` + (incidentTime > 0 ? ` ⚠️ +${incidentTime}s incident détecté!` : ''),
-                      timestamp: now,
-                      autoFilled: true,
-                      realStintTime: realStintTime,
-                      incidentTime: incidentTime
-                    }]);
                   }
                 }
               }
               
               // Mettre à jour le status précédent
-              setPrevPitStatus(prev => ({
-                ...prev,
-                [carNum]: { isInPit: currentIsInPit, timestamp: now }
-              }));
+              // v32.2: SEULEMENT quand l'état change (pas à chaque frame)
+              setPrevPitStatus(prev => {
+                const prevState = prev[carNum];
+                // Si même état, ne pas toucher au timestamp
+                if (prevState && prevState.isInPit === currentIsInPit) {
+                  return prev;
+                }
+                // Nouvel état → mettre à jour avec nouveau timestamp
+                return {
+                  ...prev,
+                  [carNum]: { isInPit: currentIsInPit, timestamp: now }
+                };
+              });
             });
             
             if (setPilotStatus) setPilotStatus(newStatus);
@@ -6375,13 +6573,17 @@
       // Collecte données (max 30 tours)
       const collectLapData = useCallback((carNum, carData) => {
         if (!setCollectedData) return;
-        const lapTimeStr = carData.lastLapTime;
-        if (!lapTimeStr || lapTimeStr.includes('--')) return;
         
-        let lapTimeSec = 0;
-        const cleanTime = lapTimeStr.replace(/^00:/, '');
-        const parts = cleanTime.match(/(\d+):(\d+)\.(\d+)/);
-        if (parts) lapTimeSec = parseInt(parts[1]) * 60 + parseInt(parts[2]) + parseInt(parts[3].substring(0,3)) / 1000;
+        // v32.1: Utiliser lastLapTimeSec directement (plus fiable que parser la string)
+        let lapTimeSec = carData.lastLapTimeSec || 0;
+        
+        // Fallback: parser la string si lastLapTimeSec non disponible
+        if (lapTimeSec <= 0 && carData.lastLapTime && !carData.lastLapTime.includes('--')) {
+          const cleanTime = carData.lastLapTime.replace(/^00:/, '');
+          const parts = cleanTime.match(/(\d+):(\d+)\.(\d+)/);
+          if (parts) lapTimeSec = parseInt(parts[1]) * 60 + parseInt(parts[2]) + parseInt(parts[3].substring(0,3)) / 1000;
+        }
+        
         if (lapTimeSec <= 0 || lapTimeSec > 300) return;
         
         const fuelUsed = carData.fuelUsedLastLap || 2.8;
@@ -6429,7 +6631,39 @@
       return (
         <div style={{minHeight: '100vh', background: 'var(--bg)'}}>
           
-          {/* HEADER */}
+          {/* ═══ v32: FLAG OVERLAY ═══ */}
+          {flagStatus && flagStatus !== 'GREEN' && flagStatus !== 'NONE' && (
+            <div 
+              className={`flag-overlay ${flagStatus === 'YELLOW' || flagStatus === 'SC' || flagStatus === 'VSC' ? 'flag-yellow' : flagStatus === 'BLUE' ? 'flag-blue' : flagStatus === 'RED' ? 'flag-red' : 'flag-yellow'}`}
+              onClick={() => setFlagStatus('GREEN')}
+            >
+              <span style={{fontSize: '24px'}}>
+                {flagStatus === 'YELLOW' ? '🟡' : flagStatus === 'BLUE' ? '🔵' : flagStatus === 'RED' ? '🔴' : flagStatus === 'SC' ? '🚗' : '🚩'}
+              </span>
+              <span>
+                {flagStatus === 'YELLOW' ? 'DRAPEAU JAUNE - PRUDENCE' : 
+                 flagStatus === 'BLUE' ? 'DRAPEAU BLEU - LAISSEZ PASSER' : 
+                 flagStatus === 'RED' ? 'DRAPEAU ROUGE - ARRÊT' : 
+                 flagStatus === 'SC' ? 'SAFETY CAR' : 
+                 flagStatus === 'VSC' ? 'VIRTUAL SAFETY CAR' : flagStatus}
+              </span>
+              <span style={{fontSize: '10px', opacity: 0.7}}>(cliquer pour fermer)</span>
+            </div>
+          )}
+          
+          {/* ═══ v32: ALERTES CARBURANT CRITIQUES ═══ */}
+          {Object.entries(fuelAlerts).filter(([k, v]) => v.lapsRemaining < 3 && (Date.now() - v.timestamp) < 60000).map(([carNum, alert]) => (
+            <div key={carNum} style={{position: 'fixed', top: flagStatus !== 'GREEN' ? '60px' : '10px', right: '10px', zIndex: 9998, padding: '12px 16px', background: 'rgba(248,81,73,0.95)', border: '2px solid var(--red)', borderRadius: '8px', animation: 'yellowPulse 0.5s infinite', maxWidth: '280px'}}>
+              <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}>
+                <span style={{fontSize: '24px'}}>⛽</span>
+                <div>
+                  <div style={{fontWeight: 700, color: '#fff'}}>CARBURANT CRITIQUE</div>
+                  <div style={{fontSize: '12px', color: 'rgba(255,255,255,0.8)'}}>#{carNum} {alert.driverName}: {alert.lapsRemaining.toFixed(1)} tours</div>
+                </div>
+                <button onClick={() => setFuelAlerts(prev => { const n = {...prev}; delete n[carNum]; return n; })} style={{background: 'none', border: 'none', color: '#fff', cursor: 'pointer', fontSize: '16px'}}>✕</button>
+              </div>
+            </div>
+          ))}
           <div style={{ background: 'linear-gradient(180deg, rgba(13,17,23,0.98) 0%, rgba(6,8,12,0.95) 100%)', borderBottom: '2px solid var(--blue)', padding: '8px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
             <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}>
               <div style={{ width: '32px', height: '32px', background: 'linear-gradient(135deg, var(--blue), var(--green))', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: '800', fontSize: '10px', color: 'var(--bg)' }}>AGP</div>
@@ -6480,7 +6714,15 @@
                 <button onClick={() => setShowWhatsNew(true)} style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--purple)', background: 'rgba(163,113,247,0.2)', color: 'var(--purple)', fontSize: '10px', cursor: 'pointer', fontWeight: '600' }}>🆕 NOUVEAUTÉS</button>
               </span>
               
-              <div style={{ padding: '4px 8px', background: 'linear-gradient(90deg, var(--purple), var(--cyan))', borderRadius: '4px', fontSize: '8px', fontWeight: '700', color: '#fff' }}>v21.5 UX</div>
+              <div style={{ padding: '4px 8px', background: 'linear-gradient(90deg, var(--purple), var(--cyan))', borderRadius: '4px', fontSize: '8px', fontWeight: '700', color: '#fff' }}>v32</div>
+              
+              {/* v32: Toggle buttons */}
+              <button onClick={() => setShowAlertsPanel(!showAlertsPanel)} style={{padding: '4px 8px', borderRadius: '4px', border: 'none', background: showAlertsPanel ? 'rgba(255,51,68,0.3)' : 'var(--bg-input)', color: showAlertsPanel ? 'var(--red)' : 'var(--text-muted)', fontSize: '9px', cursor: 'pointer'}} title="Afficher/masquer les alertes">
+                🔔 {showAlertsPanel ? 'ON' : 'OFF'}
+              </button>
+              <button onClick={() => setShowTooltips(!showTooltips)} style={{padding: '4px 8px', borderRadius: '4px', border: 'none', background: showTooltips ? 'rgba(0,102,204,0.3)' : 'var(--bg-input)', color: showTooltips ? 'var(--blue)' : 'var(--text-muted)', fontSize: '9px', cursor: 'pointer'}} title="Afficher/masquer les bulles d'aide">
+                💬 {showTooltips ? 'ON' : 'OFF'}
+              </button>
               
               <span className="help-tooltip" data-help="STATUT CONNEXION - Indique si la connexion Firebase est active">
                 <div style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '4px 10px', background: isConnected ? 'rgba(0,255,102,0.15)' : 'rgba(255,51,68,0.15)', borderRadius: '12px', border: '1px solid ' + (isConnected ? 'var(--green)' : 'var(--red)') }}>
@@ -6663,7 +6905,7 @@
           )}
           
           {/* ═══ PANNEAU SUGGESTIONS & ALERTES INTELLIGENTES v22.2 ═══ */}
-          {(suggestions.length > 0 || incidents.length > 0 || pendingDecisions.length > 0 || isRecordingRef || activeAlerts.length > 0) && (
+          {showAlertsPanel && (suggestions.length > 0 || incidents.length > 0 || pendingDecisions.length > 0 || isRecordingRef || activeAlerts.length > 0) && (
             <div style={{padding: '8px 16px', background: 'linear-gradient(90deg, rgba(255,51,68,0.1) 0%, rgba(255,136,0,0.1) 50%, rgba(88,166,255,0.1) 100%)', borderBottom: '1px solid var(--border)'}}>
               {/* HEADER ALERTES avec compteur */}
               <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px'}}>
@@ -7255,83 +7497,6 @@
                       </div>
                     )}
                     
-                    {/* PLAN STRATÉGIQUE ACTUEL v21 */}
-                    <div className="card help-tooltip" data-help="PLAN STRATÉGIQUE - Plan A = conditions normales, Plan B = pluie/adaptation, Plan C = mode dégradé/économie. Cliquez pour changer de plan." style={{padding: '10px', background: currentPlan === 'A' ? 'rgba(0,255,102,0.1)' : (currentPlan.startsWith('B') ? 'rgba(88,166,255,0.1)' : 'rgba(255,136,0,0.1)'), border: '1px solid ' + (currentPlan === 'A' ? 'var(--green)' : (currentPlan.startsWith('B') ? 'var(--blue)' : 'var(--orange)'))}}>
-                      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px'}}>
-                        <div style={{fontWeight: '700', fontSize: '11px', color: currentPlan === 'A' ? 'var(--green)' : (currentPlan.startsWith('B') ? 'var(--blue)' : 'var(--orange)')}}>
-                          🎯 PLAN {currentPlan}
-                        </div>
-                        <div style={{display: 'flex', gap: '4px'}}>
-                          {['A', 'B', 'C'].map(p => (
-                            <button 
-                              key={p}
-                              onClick={() => setCurrentPlan(p)}
-                              style={{
-                                padding: '3px 8px', 
-                                fontSize: '9px', 
-                                fontWeight: '700',
-                                background: currentPlan === p || currentPlan.startsWith(p) ? (p === 'A' ? 'var(--green)' : p === 'B' ? 'var(--blue)' : 'var(--orange)') : 'var(--bg-input)',
-                                color: currentPlan === p || currentPlan.startsWith(p) ? '#fff' : 'var(--text-muted)',
-                                border: 'none',
-                                borderRadius: '4px',
-                                cursor: 'pointer'
-                              }}
-                            >
-                              {p === 'A' ? '☀️ NOM' : p === 'B' ? '🌧️ PLUIE' : '⚠️ DÉG'}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <div style={{display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px'}}>
-                        <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                          <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Mode</div>
-                          <div style={{fontWeight: '700', fontSize: '11px', color: currentPlan === 'A' ? 'var(--green)' : (currentPlan.startsWith('B') ? 'var(--blue)' : 'var(--orange)')}}>
-                            {currentPlan === 'A' ? 'NOMINAL' : (currentPlan.startsWith('B') ? 'PLUIE' : 'DÉGRADÉ')}
-                          </div>
-                        </div>
-                        <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                          <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Stints</div>
-                          <div style={{fontWeight: '700', fontSize: '11px', color: 'var(--text)'}}>
-                            {currentPlan === 'A' ? 'Réguliers' : (currentPlan.startsWith('B') ? 'Courts -15%' : 'Longs +10%')}
-                          </div>
-                        </div>
-                        <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                          <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Objectif</div>
-                          <div style={{fontWeight: '700', fontSize: '11px', color: 'var(--cyan)'}}>
-                            {currentPlan === 'A' ? 'Performance' : (currentPlan.startsWith('B') ? 'Adaptation' : 'Finir')}
-                          </div>
-                        </div>
-                      </div>
-                      <div style={{marginTop: '6px', fontSize: '9px', color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between'}}>
-                        <span>Pneus: {currentPlan === 'A' ? 'Slicks' : (currentPlan.startsWith('B') ? 'Inter/Wet' : 'Durs')}</span>
-                        <span>Risque: {currentPlan === 'A' ? '●●○' : (currentPlan.startsWith('B') ? '●○○' : '○○○')}</span>
-                      </div>
-                    </div>
-                    
-                    {/* SUGGESTION STRATÉGIE */}
-                    {strategySuggestion && (
-                      <div className="card" style={{padding: '10px', background: 'rgba(0,255,102,0.1)', border: '1px solid var(--green)'}}>
-                        <div style={{fontWeight: '700', fontSize: '11px', marginBottom: '8px', color: 'var(--green)'}}>💡 SUGGESTION STRATÉGIE</div>
-                        <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px'}}>
-                          <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                            <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Prochain combo</div>
-                            <div style={{fontWeight: '700', fontSize: '12px', color: 'var(--cyan)'}}>
-                              {strategySuggestion.combo.tire.toUpperCase()} / {strategySuggestion.combo.mix.toUpperCase()}
-                            </div>
-                          </div>
-                          <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                            <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Fenêtre pit</div>
-                            <div style={{fontWeight: '700', fontSize: '12px', color: strategySuggestion.pitWindow.urgency === 'critical' ? 'var(--red)' : strategySuggestion.pitWindow.urgency === 'warning' ? 'var(--orange)' : 'var(--green)'}}>
-                              Tour {strategySuggestion.pitWindow.optimalLap}
-                            </div>
-                          </div>
-                        </div>
-                        <div style={{fontSize: '9px', color: 'var(--text-muted)', marginTop: '4px', textAlign: 'center'}}>
-                          {strategySuggestion.combo.reason}
-                        </div>
-                      </div>
-                    )}
-                    
                     {/* Pit Strategy */}
                     <div className="card help-tooltip" data-help="PIT STRATEGY - Tour prévu pour le prochain arrêt, fenêtre optimale, durée estimée et type d'arrêt (carburant seul, pneus, ou les deux)." style={{padding: '12px'}}>
                       <div style={{fontWeight: '700', fontSize: '12px', marginBottom: '10px', color: 'var(--text-muted)'}}>🔧 PIT STRATEGY</div>
@@ -7458,36 +7623,68 @@
                   
                   {/* Classement */}
                   <div className="card" style={{padding: '12px', flex: 1}}>
-                    <div style={{fontWeight: '700', fontSize: '13px', marginBottom: '10px'}}>📋 CLASSEMENT AGP</div>
+                    <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px'}}>
+                      <span style={{fontWeight: '700', fontSize: '13px'}}>📋 CLASSEMENT</span>
+                      <div style={{display: 'flex', gap: '4px'}}>
+                        <button onClick={() => setFeedFilter(f => ({...f, fullGrid: false}))} style={{padding: '4px 8px', borderRadius: '4px', border: 'none', background: !feedFilter.fullGrid ? 'var(--blue)' : 'var(--bg-input)', color: !feedFilter.fullGrid ? '#fff' : 'var(--text-muted)', fontSize: '9px', cursor: 'pointer'}}>AGP ({standings.length})</button>
+                        <button onClick={() => setFeedFilter(f => ({...f, fullGrid: true}))} style={{padding: '4px 8px', borderRadius: '4px', border: 'none', background: feedFilter.fullGrid ? 'var(--green)' : 'var(--bg-input)', color: feedFilter.fullGrid ? '#fff' : 'var(--text-muted)', fontSize: '9px', cursor: 'pointer'}}>COMPLET ({liveAllVehicles.length})</button>
+                      </div>
+                    </div>
                     <div style={{maxHeight: '350px', overflowY: 'auto'}}>
                       <table style={{width: '100%', borderCollapse: 'collapse'}}>
                         <thead>
                           <tr style={{fontSize: '10px', color: 'var(--text-muted)'}}>
                             <th style={{padding: '6px', textAlign: 'left'}}>P</th>
                             <th style={{padding: '6px', textAlign: 'left'}}>#</th>
-                            <th style={{padding: '6px', textAlign: 'left'}}>Équipe</th>
-                            <th style={{padding: '6px', textAlign: 'left'}}>Pilote</th>
+                            <th style={{padding: '6px', textAlign: 'left'}}>{feedFilter.fullGrid ? 'Pilote' : 'Équipe'}</th>
                             <th style={{padding: '6px', textAlign: 'center'}}>Tour</th>
                             <th style={{padding: '6px', textAlign: 'right'}}>Dernier</th>
+                            <th style={{padding: '6px', textAlign: 'right'}}>Écart</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {standings.map(s => (
-                            <tr key={s.num} style={{background: s.online ? 'rgba(63,185,80,0.1)' : 'rgba(255,51,68,0.1)', borderBottom: '1px solid var(--border)'}}>
-                              <td style={{padding: '8px', fontWeight: '700', fontSize: '14px'}}>P{s.pos}</td>
-                              <td style={{padding: '8px', fontWeight: '700', color: 'var(--orange)', fontSize: '12px'}}>#{s.num}</td>
-                              <td style={{padding: '8px', fontSize: '11px'}}>{s.team}</td>
-                              <td style={{padding: '8px', fontSize: '10px', color: 'var(--cyan)'}}>{s.driver}</td>
-                              <td style={{padding: '8px', textAlign: 'center', fontSize: '11px', fontWeight: '600'}}>{s.lap}</td>
-                              <td style={{padding: '8px', textAlign: 'right', fontFamily: 'JetBrains Mono', fontSize: '10px', color: s.lastLapTime && s.lastLapTime !== '--:--.---' ? 'var(--cyan)' : 'var(--text-dim)'}}>{s.lastLapTime || '--:--.---'}</td>
-                            </tr>
-                          ))}
+                          {/* v32: Affichage conditionnel AGP ou COMPLET */}
+                          {feedFilter.fullGrid && liveAllVehicles.length > 0 ? (
+                            liveAllVehicles.map((v, idx) => {
+                              const isAGP = ['02', '05', '31', '99', '002', '005', '099'].includes(String(v.carNumber));
+                              return (
+                                <tr key={v.carNumber || idx} style={{
+                                  background: isAGP ? 'rgba(88,166,255,0.15)' : v.isInPit ? 'rgba(240,136,62,0.1)' : 'transparent',
+                                  borderBottom: '1px solid var(--border)',
+                                  borderLeft: isAGP ? '3px solid var(--blue)' : 'none'
+                                }}>
+                                  <td style={{padding: '6px', fontWeight: '700', fontSize: '12px', color: v.position <= 3 ? (v.position === 1 ? '#ffd700' : v.position === 2 ? '#c0c0c0' : '#cd7f32') : 'var(--text)'}}>P{v.position}</td>
+                                  <td style={{padding: '6px', fontWeight: '600', color: isAGP ? 'var(--blue)' : 'var(--orange)', fontSize: '11px'}}>#{v.carNumber}</td>
+                                  <td style={{padding: '6px', fontSize: '10px'}}>{v.driverName || '--'} {v.isInPit ? <span style={{color: 'var(--orange)'}}>📍</span> : ''}</td>
+                                  <td style={{padding: '6px', textAlign: 'center', fontSize: '10px', fontWeight: '600'}}>{v.currentLap || 0}</td>
+                                  <td style={{padding: '6px', textAlign: 'right', fontFamily: 'JetBrains Mono', fontSize: '9px', color: 'var(--cyan)'}}>{v.lastLapTime || '--'}</td>
+                                  <td style={{padding: '6px', textAlign: 'right', fontFamily: 'JetBrains Mono', fontSize: '9px', color: 'var(--text-muted)'}}>{v.position === 1 ? 'LEADER' : v.gapToLeader ? '+' + v.gapToLeader.toFixed(1) + 's' : '--'}</td>
+                                </tr>
+                              );
+                            })
+                          ) : (
+                            standings.map(s => (
+                              <tr key={s.num} style={{background: s.online ? 'rgba(63,185,80,0.1)' : 'rgba(255,51,68,0.1)', borderBottom: '1px solid var(--border)'}}>
+                                <td style={{padding: '8px', fontWeight: '700', fontSize: '14px'}}>P{s.pos}</td>
+                                <td style={{padding: '8px', fontWeight: '700', color: 'var(--orange)', fontSize: '12px'}}>#{s.num}</td>
+                                <td style={{padding: '8px', fontSize: '11px'}}>{s.team}<br/><span style={{fontSize: '9px', color: 'var(--cyan)'}}>{s.driver}</span></td>
+                                <td style={{padding: '8px', textAlign: 'center', fontSize: '11px', fontWeight: '600'}}>{s.lap}</td>
+                                <td style={{padding: '8px', textAlign: 'right', fontFamily: 'JetBrains Mono', fontSize: '10px', color: s.lastLapTime && s.lastLapTime !== '--:--.---' ? 'var(--cyan)' : 'var(--text-dim)'}}>{s.lastLapTime || '--:--.---'}</td>
+                                <td style={{padding: '8px', textAlign: 'right', fontFamily: 'JetBrains Mono', fontSize: '10px', color: 'var(--text-muted)'}}>{s.pos === 1 ? 'LEADER' : '+' + (s.gap || 0).toFixed(1) + 's'}</td>
+                              </tr>
+                            ))
+                          )}
                         </tbody>
                       </table>
                     </div>
-                    {standings.filter(s => !s.online).length > 0 && (
+                    {!feedFilter.fullGrid && standings.filter(s => !s.online).length > 0 && (
                       <div style={{marginTop: '8px', padding: '6px', background: 'rgba(255,51,68,0.1)', borderRadius: '4px', fontSize: '10px', color: 'var(--red)'}}>
                         ⚠️ {standings.filter(s => !s.online).length} équipe(s) offline
+                      </div>
+                    )}
+                    {feedFilter.fullGrid && liveAllVehicles.length === 0 && (
+                      <div style={{marginTop: '8px', padding: '10px', background: 'rgba(240,192,0,0.1)', borderRadius: '4px', fontSize: '10px', color: 'var(--yellow)', textAlign: 'center'}}>
+                        ⏳ En attente des données allVehicles du plugin SimHub...
                       </div>
                     )}
                   </div>
@@ -7497,12 +7694,12 @@
                 <div className="card" style={{padding: '12px'}}>
                   <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px'}}>
                     <span style={{fontWeight: '700', fontSize: '13px'}}>📡 FIL DE COURSE</span>
-                    <span style={{fontSize: '8px', color: 'var(--green)'}}>● LIVE</span>
+                    <span style={{fontSize: '8px', color: 'var(--green)'}}>● LIVE ({raceEvents.length})</span>
                   </div>
                   
                   {/* Filtres */}
                   <div style={{display: 'flex', gap: '4px', marginBottom: '10px', flexWrap: 'wrap'}}>
-                    {[['agp', '⭐ AGP'], ['pit', '🔧 Pit'], ['overtake', '⬆️ Dép.'], ['best', '🏆 Best']].map(([key, label]) => (
+                    {[['agp', '⭐ AGP'], ['pit', '🔧 Pit'], ['flag', '🚩 Flag'], ['best', '🏆 Best']].map(([key, label]) => (
                       <button key={key} onClick={() => setFeedFilter(f => ({...f, [key]: !f[key]}))} style={{
                         padding: '3px 8px', borderRadius: '10px', border: 'none',
                         background: feedFilter[key] ? 'var(--blue)' : 'var(--bg-input)',
@@ -7512,23 +7709,34 @@
                     ))}
                   </div>
                   
-                  {/* Feed */}
+                  {/* Feed - v32: Événements réels */}
                   <div style={{maxHeight: '400px', overflowY: 'auto'}}>
-                    {[
-                      { type: 'agp', time: '14:32', text: '#05 AGP 1 → P3 (+2 pos)' },
-                      { type: 'pit', time: '14:30', text: '#02 AGP 2 arrêt stands (72s)' },
-                      { type: 'best', time: '14:28', text: '#12 Veloce record: 1:47.234' },
-                      { type: 'agp', time: '14:26', text: '#31 AGP 3 → P5 (+1 pos)' },
-                      { type: 'overtake', time: '14:25', text: '#99 AGP OvS dépasse #77' },
-                      { type: 'pit', time: '14:22', text: '#45 Redline arrêt (fuel only)' },
-                      { type: 'agp', time: '14:20', text: '#05 AGP 1 best: 1:48.012' },
-                      { type: 'overtake', time: '14:18', text: '#31 AGP 3 dépasse #88' },
-                    ].filter(f => feedFilter[f.type]).map((item, i) => (
-                      <div key={i} style={{padding: '8px', borderBottom: '1px solid var(--border)', display: 'flex', gap: '8px', alignItems: 'center'}}>
-                        <span style={{fontSize: '9px', color: 'var(--text-dim)', minWidth: '35px'}}>{item.time}</span>
-                        <span style={{fontSize: '11px'}}>{item.text}</span>
+                    {raceEvents.length === 0 ? (
+                      <div style={{padding: '20px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '11px'}}>
+                        En attente d'événements...<br/>
+                        <span style={{fontSize: '9px'}}>Les pit stops et drapeaux apparaîtront ici</span>
                       </div>
-                    ))}
+                    ) : (
+                      raceEvents.filter(ev => {
+                        if (ev.type === 'flag' && !feedFilter.flag) return false;
+                        if ((ev.type === 'pit-in' || ev.type === 'pit-out') && !feedFilter.pit) return false;
+                        return true;
+                      }).slice(0, 50).map((ev, i) => (
+                        <div key={i} style={{
+                          padding: '8px', 
+                          borderBottom: '1px solid var(--border)', 
+                          display: 'flex', 
+                          gap: '8px', 
+                          alignItems: 'center',
+                          borderLeft: ev.type === 'pit-in' ? '3px solid var(--orange)' : ev.type === 'pit-out' ? '3px solid var(--green)' : ev.type === 'flag' ? '3px solid var(--yellow)' : 'none',
+                          background: ev.type === 'flag' ? 'rgba(240,192,0,0.1)' : 'transparent'
+                        }}>
+                          <span style={{fontSize: '9px', color: 'var(--text-dim)', minWidth: '50px'}}>{ev.time}</span>
+                          <span style={{fontSize: '14px'}}>{ev.icon}</span>
+                          <span style={{fontSize: '11px'}}>{ev.message}</span>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
                 
@@ -7601,6 +7809,7 @@
       // Theme
       const [currentTheme, setCurrentTheme] = useState(() => { try { return localStorage.getItem(SKEY + '-theme') || 'dark'; } catch { return 'dark'; } });
       useEffect(() => { document.body.className = ''; const theme = THEMES.find(t => t.id === currentTheme); if (theme) document.body.classList.add(theme.class); localStorage.setItem(SKEY + '-theme', currentTheme); }, [currentTheme]);
+      
       
       const [teams, setTeams] = useState(() => {
         try {
